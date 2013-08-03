@@ -1,0 +1,318 @@
+#! /usr/bin/env perl
+use strict;
+use POSIX qw(strftime);
+use Time::Local;
+use Time::ParseDate;
+use Getopt::Long;
+use Term::ANSIColor;#print different color in terminal ,try perldoc Term::ANSIColor;
+#定义 应用  ，开始时间等变量
+my ($app, $time_now,$start_time ,$range_time,$flag);
+#默认结束时间为空
+my $end_time = '';
+GetOptions(
+	'help|h|?' => sub { Help();} ,
+	'role|r=s'   => \$app,
+	'start_time|st=s'  => \$start_time,
+	'end_time|et=s'  => \$end_time,
+	'range_time|rt=s'     => \$range_time
+);
+my $ret;
+
+#定义彩色处
+sub color_message{
+         my($colors,$messages) = @_;
+        print color "bold  $colors";
+        print "$messages \n";
+        print color 'reset';
+}
+
+sub Help
+{
+	color_message 'green', 'cpislog_api  -h/--help          :show help information';
+	color_message 'green', 'cpislog_api  -r/--role  	:role of server, like cpisfc|fc cpisfscs|fscs';
+	color_message 'green', 'cpislog_api  -st/--start_time   :start time of log, like 20121110 20121110123400';
+	color_message 'green', 'cpislog_api  -et/--end_time  	:end time of log, like 20121110 20121110123400';
+	color_message 'green', 'cpislog_api  -rt/--range_time   :range time of log, like 10m 3h 60s etc';
+	exit 1;
+
+}
+#定义时间处理的函数--判断开始时间，结束时间，以及不同格式的时间，最后返回类似Unix时间戳的标准时间
+sub manage_time
+{
+	if ( defined $range_time ){
+		my $ret = convert_start_time($range_time) ;
+              		my  $time_now = time;
+		if ( $ret != 0 ){
+                	$start_time = strftime("%Y%m%d%H%M%S",localtime($time_now - $ret));
+			$end_time = strftime("%Y%m%d%H%M%S",localtime($time_now));
+
+		}else{
+                	$range_time =~ s/[^\d]//g;
+                	if(length($range_time) == 10) #时间格式类似 2012103119，则补上分钟和秒数
+                	{
+                        	$end_time .= substr($range_time,0,10);
+                        	$end_time .= '5959';
+                	}
+                	else
+                	{
+                        	$end_time .= substr($range_time,0,8);
+                        	$end_time .= '235959';
+               		 }
+                	while(length($range_time) < 14) #只支持14位的时间格式呢，补零
+                	{
+                        	$start_time .= '0';
+                	}
+		}
+
+		}elsif ( defined $start_time and defined $end_time ) {
+
+		$start_time =~ s/[^\d]//g; #删除开始时间里面非数字的字符
+        while(length($start_time) < 14) #如果开始时间少于14位，则用零补齐
+        {
+                $start_time .= '0';
+        }
+
+        	$end_time =~ s/[^\d]//g;
+
+        if(length($end_time) == 8)
+        {
+                $end_time .= '235959';
+        }
+        elsif(length($end_time) == 10)
+        {
+                $end_time .= '5959';
+        }
+        elsif(length($end_time) == 12)
+        {
+                $end_time .= '59';
+        }
+
+	#return $start_time ,$end_time ;
+	}
+
+	if (  ! $start_time ){
+		&Help();
+	}
+	if (  ! $end_time ){
+		my $time_now = time;
+                $end_time = strftime("%Y%m%d%H%M%S",localtime($time_now));
+	}
+		return $start_time ,$end_time ;
+
+}
+
+
+sub convert_start_time
+{
+	my $time_tmp= shift or &Help() ;
+	if( $time_tmp ){
+		if($time_tmp =~ /h/i){
+		$time_tmp =~ s/[^\d]//g ;
+		return  $time_tmp*(60*60) ;
+		}elsif($time_tmp =~ /m/i){
+		$time_tmp =~ s/[^\d]//g ;
+		return  $time_tmp*60 ;
+		}elsif($time_tmp =~ /s/i){
+		$time_tmp =~ s/[^\d]//g ;
+		}else{
+		$time_tmp = 0 ;
+		}
+	}
+	return $time_tmp ;
+}
+
+sub convert_time_to_unix
+{
+	my ($start_time,$end_time) = manage_time();
+	my ($time_sys_start,$time_sys_end);
+	$time_sys_start = timelocal((substr($start_time,-2,2)),(substr($start_time,-4,2)),
+                    (substr($start_time,-6,2)),(substr($start_time,-8,2)),(substr($start_time,-10,2) - '01'),
+                            (substr($start_time,0,4)));
+
+	$time_sys_end = timelocal((substr($end_time,-2,2)),(substr($end_time,-4,2)),
+                    (substr($end_time,-6,2)),(substr($end_time,-8,2)),(substr($end_time,-10,2) - '01'),
+                            (substr($end_time,0,4)));
+    return $time_sys_start ,$time_sys_end;
+
+}
+
+sub manage_time_log
+{
+	my $time_head;
+	my ($app,$file_first_line) =@_ ;
+        if ( ($app =~ /cpisfc/i) || ( $app =~ /fc/i )){
+         $time_head = substr($file_first_line,0,14);
+        }elsif( ($app =~ /cpisfscs/i) || ( $app =~ /fscs/i )){
+        my $tmp_time=substr($file_first_line,0,15);
+        $time_head = parsedate($tmp_time);
+        #$time_head = `/bin/date +%s -d "$tmp_time"`;
+        }
+	return $time_head;
+}
+
+sub find_file
+{
+	my $app = shift or Help();
+	my ($file_path,$time_head);
+	if ( ($app =~ /cpisfc/i) || ( $app =~ /fc/i )){
+	 $file_path="/data/proclog/log/squid/access";
+	}elsif( ($app =~ /cpisfscs/i) || ( $app =~ /fscs/i )){
+	$file_path="/data/proclog/log/fscs/access"
+	}
+	my $access_log=manage_log($app);
+	open LOG,$access_log or die "can't open the $access_log file \n";
+	my $file_first_line=<LOG>;
+	close LOG ;
+	$time_head = manage_time_log($app,$file_first_line);
+	my ($time_sys_start ,$time_sys_end) = convert_time_to_unix();
+
+	if (($time_sys_end gt $time_head ) && ($time_sys_start lt $time_head)){
+	#说明符合条件的文件也包含access.log
+	 $flag='include_un_tgz';
+
+	}elsif($time_head lt $time_sys_start ){
+#	read_file($access_log,$time_sys_start ,$time_sys_end);
+	$flag = 'none' ;
+	}elsif( $time_sys_end lt $time_head ){
+	$flag = 'tgz' ;
+	}
+
+	my ($time_file,@name_file_tmp);
+	my @time_file_tmp = qw(20110101000000);
+	opendir FP, $file_path or die "can't open $file_path \n";
+	foreach my $file ( readdir FP ){
+		if ( $file =~ /gz$/ ){
+			push @name_file_tmp,$file ;
+			$time_file = substr($file,-17,14);
+			push @time_file_tmp,$time_file ;
+		}
+	}
+	closedir FP ;
+
+	my (@filetime,@filename,@totalfile);
+	@filetime = sort @time_file_tmp;
+	@filename = sort @name_file_tmp;
+	my $index = 0 ;
+	while($index < $#filetime){ #将符合条件的文件push到一个文件名的数组里面，这里有些特殊，就是一个文件开始，一个末尾的文件
+    if((($filetime[$index] le $start_time) && ($filetime[$index + 1]  ge $start_time))
+            || (($filetime[$index] ge $start_time) && ($filetime[$index + 1] le $end_time))
+            || (($filetime[$index] le $end_time) && ($filetime[$index + 1] ge $end_time)))
+    {
+        push @totalfile, $file_path.'/'.$filename[$index];
+    }
+    $index++;
+	}
+	return $flag,@totalfile;
+
+}
+sub read_file
+{
+    my ($log,$time_sys_start,$time_sys_end) = @_;
+    my $time_head;
+    open LOG,$log or die "can't open $log";
+    while(<LOG>)
+    {
+        $time_head = manage_time_log($app,$_);
+        if(($time_head ge $time_sys_start) && ($time_head le $time_sys_end))
+        {
+            print ;
+
+        }
+        if($time_head gt $time_sys_end)
+        {
+                last;
+        }
+    }
+   close LOG;
+}
+
+sub read_gz_file
+{
+	my ($total_number,$count,$time_head);
+        my ($time_sys_start ,$time_sys_end) = convert_time_to_unix();
+	my ($flag,@total_file ) = find_file($app);
+	$total_number = $#total_file;
+	if ( $total_number == 0 ) {
+        open FILE,"zcat -1 -f $total_file[0] |";
+        while (<FILE>)
+        {
+        	$time_head = manage_time_log($app,$_);
+                if(($time_head ge $time_sys_start) && ($time_head le $time_sys_end))
+                {
+                        print;
+                }
+        }
+        close FILE;
+	}elsif($total_number > 0 ){
+        open FILE,"zcat -1 -f $total_file[0] |";
+        while (<FILE>)
+        {
+        	$time_head = manage_time_log($app,$_);
+                if(($time_head ge $time_sys_start) && ($time_head le $time_sys_end))
+                {
+                        print;
+                }
+        }
+        close FILE;
+	$count = 1 ;
+        while($count <= ($total_number - 1))
+        {
+                open FILE_E,"zcat -1 -f  $total_file[$count] |";
+                while(<FILE_E>)
+                {
+                        print;
+                }
+                close FILE_E;
+        $count++;
+        }
+        open FILE_L,"zcat -1 -f  $total_file[-1] |";
+        while (<FILE_L>)
+        {
+        $time_head = manage_time_log($app,$_);
+                if(($time_head ge $time_sys_start) && ($time_head le $time_sys_end))
+                {
+                        print;
+                }
+                if($time_head gt $time_sys_end)
+                {
+                        last;
+                }
+
+        }
+        close FILE_L;
+
+	}
+
+
+}
+
+sub manage_log
+{
+	my $access_log;
+	my $app = shift or Help();
+	if (($app eq 'fc') || ($app eq 'cpisfc') ){
+
+	$access_log = '/data/proclog/log/squid/access.log';
+	}elsif( ($app =~ /cpisfscs/i) || ($app =~ /fscs/i) ){
+	$access_log = '/data/proclog/log/haproxy/access.log';
+	}
+	return $access_log ;
+}
+if ( ($#ARGV == 0) or (not defined $app)){
+	$app = 'cpisfc';
+	Help();
+}
+        my ($time_sys_start ,$time_sys_end) = convert_time_to_unix();
+        my ($flag ,@total_file ) = find_file($app);
+	my $access_log = manage_log($app);
+	if ((defined $flag) && ($flag eq 'include_un_tgz') ){
+	read_gz_file();
+	read_file( $access_log,$time_sys_start,$time_sys_end );
+	}
+	if ((defined $flag) && ($flag eq 'tgz') ){
+	read_gz_file();
+	}
+	if((defined $flag) and ( $flag eq 'none' ) ){
+	read_file($access_log,$time_sys_start ,$time_sys_end);
+	}
+

@@ -1,0 +1,129 @@
+#!/usr/bin/perl
+use strict ;
+use Getopt::Long ;
+use Time::Local;
+use Time::ParseDate; #将时间转换成unix时间戳
+use POSIX qw(strftime);
+use Encode;
+use Net::IP;
+use URI;
+my ($total,$app, $time_interval, $start_time ,$end_time ,$range_time,$url,$http_code,$ip,$net);
+system('LANG=zh_CN.GB18030');
+my $version = 1.1 ;
+if ( $#ARGV == -1){
+    Help();
+}
+ GetOptions(
+    'help|h|?' => sub { Help();} ,
+    'version|v' => sub { Version();} ,
+    'role|r=s'   => \$app,
+    'start_time|st=s'  => \$start_time,
+    'end_time|et=s'  => \$end_time,
+    'range_time|rt=s'     => \$range_time,
+    'url|u=s'     => \$url ,
+    'ip=s'     => \$ip ,
+    'net=s'     => \$net ,
+    'http_code|hc=s'     => \$http_code ,
+    'time_interval|i=i'     => \$time_interval ,
+);
+
+if (! $app ){
+    $app = 'cpisfscs';
+}
+sub Version{
+    print "$version\n";
+    exit ;
+}
+sub Help{
+	print "cpislog --role [fc|fscs] --range_time|--start_time,--end_time [-i|--url|--ip|--net] \n";
+	print "		you must point role and time(--range_time 10m|1h .etc or --start_time xxxx --end_time xxxx ),then you may choose other options: \n";
+	print "		interval/i  n (unit is min) count a filed's interval \n";
+	print "		url/u  http://www.baidu.com/index.html  while print the backend FC and http_code \n";
+	print "		ip   221.130.162.1   while print the total visit numbers \n";
+	print "		net   221.130.162.0/24   while print the total visit numbers \n";
+	print "		----example --------------------------------------------------------------------------------------------------------\n";
+	print "		cpislog --role [fc|fscs]  --start_time [20121212121200] --end_time [20121212121300]  	   \n";
+	print "		cpislog --role [fc|fscs]  --start_time [20121212121200] --end_time [20121212121300]   -u www.baidu.com\n";
+	print "		cpislog --role [fc|fscs]  --range_time [10m|1h] 	-u www.baidu.com --http_code 504    				     \n";
+	print "		cpislog --role [fc|fscs]  --range_time [10m|1h] 	-u www.baidu.com --ip  221.130.162.34    				     \n";
+	print "		cpislog --role [fc|fscs]  --range_time [10m|1h] 	 --ip  221.130.162.34    				     \n";
+	print "		------------ --------------------------------------------------------------------------------------------------------\n";
+    exit;
+
+}
+my ($time_sys_start,$time_sys_end);
+if (  $start_time and not $end_time ){
+open FH,  "perl ../bin/cpislog_api --role $app --start_time $start_time | " ;
+}elsif( $start_time and  $end_time ){
+open FH,  "perl ../bin/cpislog_api --role $app --start_time $start_time --end_time $end_time | " ;
+        $time_sys_start = timelocal((substr($start_time,-2,2)),(substr($start_time,-4,2)),
+                    (substr($start_time,-6,2)),(substr($start_time,-8,2)),(substr($start_time,-10,2) - '01'),
+                            (substr($start_time,0,4)));
+
+        $time_sys_end = timelocal((substr($end_time,-2,2)),(substr($end_time,-4,2)),
+                    (substr($end_time,-6,2)),(substr($end_time,-8,2)),(substr($end_time,-10,2) - '01'),
+                            (substr($end_time,0,4)));
+}elsif( $range_time ){
+open FH,  "perl ..//bin/cpislog_api --role $app --rt $range_time | " ;
+}else{
+exit 1;
+}
+my %server;
+my $ips;
+my ($start_ip_num,$end_ip_num);
+if(defined $net){
+	my $ip = new Net::IP ("$net") or die (Net::IP::Error());
+	$start_ip_num=$ip->intip();
+	$end_ip_num=$ip->last_int();
+}
+while(<FH>){
+	#my $time_head = parsedate(substr($_,0,15));
+	my @file = split(/ /,$_);
+	if(defined $url and not defined $http_code){
+
+		my $url_tmp = URI->new($url);
+		my $url_host = $url_tmp->host();
+		my $url_path = $url_tmp->path();
+	#	print $url_host,"\n" ,$url_path,"\n";
+		if( $file[17] =~ /\{$url_host|.*/ and $file[20] eq  "$url_path"){
+			print $file[8]," ",$file[10],"\n";
+		}
+	}elsif( defined $url and defined $http_code){
+		my $url_tmp = URI->new($url);
+		my $url_host = $url_tmp->host();
+		my $url_path = $url_tmp->path();
+		if( ($file[17] =~ /\{$url_host|.*/) and ($file[20] eq  "$url_path") and ($file[10] eq "$http_code")){
+		print $file[8]," ",$file[10],"\n";
+		}
+	}elsif( not defined $url and defined $http_code){
+		if(  ($file[10] eq "$http_code")){
+		$server{$file[8]}++;
+		#print $file[8]," ",$file[10],"\n";
+		}
+	}elsif(not defined $url and not defined $http_code and defined $ip){
+		my @ip_in_log = split(/:/,$file[5]);
+		if($ip_in_log[0] eq $ip){
+		$ips++;
+		}
+	}elsif(not defined $url and not defined $http_code and defined $net){
+		my @ip_in_log = split(/:/,$file[5]);
+		my $ip_tmp = new Net::IP ("$ip_in_log[0]");
+		if($ip_tmp->intip() > $start_ip_num and $ip_tmp->intip() < $end_ip_num){
+                $ips++;
+		}
+        }else{
+
+		print;
+	}
+}
+if( not defined $url and defined $http_code){
+	foreach (sort  { $server{$b} <=> $server{$a} }  keys  %server){
+	print $_," ",$server{$_},"\n";
+	}
+}
+if(defined $ip){
+	print "IP :",$ip,": ",$ips," 次访问\n";
+}
+if(defined $net){
+	print "IP :",$net,": ",$ips," 次访问\n";
+}
